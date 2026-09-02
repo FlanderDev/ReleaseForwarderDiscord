@@ -1,0 +1,50 @@
+name: Notify Discord on Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets
+          gh release download "${{ github.event.release.tag_name }}" \
+            --repo "${{ github.repository }}" \
+            --dir release-assets
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      # Native AOT on Linux needs clang + a couple of dev libs to link the binary.
+      - name: Install Native AOT build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish Native AOT binary
+        run: >
+          dotnet publish ReleaseForwarderDiscord/ReleaseForwarderDiscord.csproj
+          -c Release
+          -r linux-x64
+          -o ./publish
+
+      - name: Send Discord notification
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+          CHANGELOG_BODY: ${{ github.event.release.body }}
+          ASSETS_DIR: ${{ github.workspace }}/release-assets
+          # Example: only forward zip/tar.gz/exe assets
+          FILE_PATTERN: '\.(zip|tar\.gz|exe)$'
+        run: ./publish/ReleaseForwarderDiscord
