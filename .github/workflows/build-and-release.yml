@@ -1,19 +1,15 @@
-name: Build & Release (Native AOT)
+name: Build & Release (Native AOT - Linux only)
 
-# Runs on every push to a branch. Tag pushes are intentionally excluded,
-# since the release job below creates a tag - without this exclusion, that
-# tag push would re-trigger this workflow in a loop.
+# Runs on pushes to any branch. Tag pushes are excluded so the release
+# job creating a tag does not re-trigger this workflow.
 on:
   push:
     branches:
       - '**'
 
-# Needed so the release job can create tags/releases and upload assets.
 permissions:
   contents: write
 
-# Cancel superseded runs on the same branch instead of piling up releases
-# for commits that are already out of date.
 concurrency:
   group: aot-release-${{ github.ref }}
   cancel-in-progress: true
@@ -28,12 +24,6 @@ jobs:
             rid: linux-x64
           - os: ubuntu-24.04-arm
             rid: linux-arm64
-          - os: windows-latest
-            rid: win-x64
-          - os: macos-13
-            rid: osx-x64
-          - os: macos-14
-            rid: osx-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -44,30 +34,25 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      # Native AOT's Linux linker needs clang + zlib headers at publish
-      # time. macOS and Windows runners already ship what's needed.
-      - name: Install Native AOT build prerequisites (Linux)
-        if: runner.os == 'Linux'
+      # Native AOT linker prerequisites on Linux
+      - name: Install Native AOT build prerequisites
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
       - name: Publish Native AOT binary
         run: >
-          dotnet publish ReleaseForwarderDiscord/ReleaseForwarderDiscord.csproj
+          dotnet publish ReleaseForwarderDiscord.csproj
           -c Release
           -r ${{ matrix.rid }}
           -o ./publish
+          --self-contained true
 
       - name: Package artifact
         shell: bash
         run: |
           mkdir -p dist
           cd publish
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a "../dist/ReleaseForwarderDiscord-${{ matrix.rid }}.zip" ReleaseForwarderDiscord.exe
-          else
-            chmod +x ReleaseForwarderDiscord
-            tar -czf "../dist/ReleaseForwarderDiscord-${{ matrix.rid }}.tar.gz" ReleaseForwarderDiscord
-          fi
+          chmod +x ReleaseForwarderDiscord
+          tar -czf "../dist/ReleaseForwarderDiscord-${{ matrix.rid }}.tar.gz" ReleaseForwarderDiscord
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -80,7 +65,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download all platform artifacts
+      - name: Download all Linux artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
@@ -90,7 +75,7 @@ jobs:
         id: vars
         run: echo "sha_short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      - name: Create release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}-${{ steps.vars.outputs.sha_short }}
