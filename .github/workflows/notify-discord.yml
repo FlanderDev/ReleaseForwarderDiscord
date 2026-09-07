@@ -1,8 +1,18 @@
 name: Notify Discord on Release
 
 on:
-  release:
-    types: [published]
+  workflow_call:
+    secrets:
+      DISCORD_BOT_TOKEN:
+        required: true
+      DISCORD_CHANNEL_ID:
+        required: true
+    inputs:
+      file_pattern:
+        description: "Regex to filter which assets to link (matched against filename)"
+        type: string
+        required: false
+        default: '.*'
 
 jobs:
   notify:
@@ -11,21 +21,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p release-assets
-          gh release download "${{ github.event.release.tag_name }}" \
-            --repo "${{ github.repository }}" \
-            --dir release-assets
-
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
 
-      # Native AOT on Linux needs clang + a couple of dev libs to link the binary.
       - name: Install Native AOT build prerequisites
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
@@ -36,6 +36,33 @@ jobs:
           -r linux-x64
           -o ./publish
 
+      - name: Build asset links
+        id: assets
+        env:
+          PATTERN: ${{ inputs.file_pattern }}
+        run: |
+          # Build markdown links from the release assets
+          LINKS=""
+          while IFS= read -r line; do
+            name=$(echo "$line" | cut -d'|' -f1)
+            url=$(echo "$line" | cut -d'|' -f2)
+            if [[ "$name" =~ $PATTERN ]]; then
+              LINKS+="- [$name]($url)"$'\n'
+            fi
+          done < <(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${{ github.repository }}/releases/tags/${{ github.event.release.tag_name }}" \
+              --jq '.assets[] | "\(.name)|\(.browser_download_url)"'
+          )
+
+          # Multiline output for GitHub Actions
+          {
+            echo "links<<EOF"
+            echo "$LINKS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Send Discord notification
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
@@ -44,7 +71,5 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           RELEASE_URL: ${{ github.event.release.html_url }}
           CHANGELOG_BODY: ${{ github.event.release.body }}
-          ASSETS_DIR: ${{ github.workspace }}/release-assets
-          # Example: only forward zip/tar.gz/exe assets
-          FILE_PATTERN: '\.(zip|tar\.gz|exe)$'
+          ASSET_LINKS: ${{ steps.assets.outputs.links }}
         run: ./publish/ReleaseForwarderDiscord
